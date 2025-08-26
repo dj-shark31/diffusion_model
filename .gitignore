@@ -1,12 +1,12 @@
 # Checkpoints
-checkpoints/*.pth
+checkpoints/*/*.pth
 
 # Data
 data/MNIST
 
 # Evaluation results
-evaluation_results/*.pkl
-evaluation_results/*.txt
+evaluation_results/*/*.pkl
+evaluation_results/*/*.txt
 
 # Logs
 logs/test*
@@ -16,9 +16,6 @@ samples/test*
 
 # Configs
 configs/__pycache__
-
-# Visualization
-visualize_dataset/
 
 # OS
 .DS_Store
