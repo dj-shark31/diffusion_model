@@ -1,4 +1,0 @@
-[console_scripts]
-diffusion-eval = diffusion.eval:main
-diffusion-sample = diffusion.sample:main
-diffusion-train = diffusion.train:main

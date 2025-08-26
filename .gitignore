@@ -22,3 +22,4 @@ visualize_dataset/
 
 # OS
 .DS_Store
+diffusion_model.egg-info/
