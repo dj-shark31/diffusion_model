@@ -25,7 +25,7 @@ setup(
     description="A PyTorch implementation of DDPM (Denoising Diffusion Probabilistic Models) for image generation",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/yourusername/diffusion-model",
+    url="https://github.com/dj-shark31/diffusion_model",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -93,9 +93,8 @@ setup(
         "artificial-intelligence",
     ],
     project_urls={
-        "Bug Reports": "https://github.com/yourusername/diffusion-model/issues",
-        "Source": "https://github.com/yourusername/diffusion-model",
-        "Documentation": "https://github.com/yourusername/diffusion-model#readme",
+        "Source": "https://github.com/dj-shark31/diffusion_model",
+        "Documentation": "https://github.com/dj-shark31/diffusion_model#readme",
     },
     zip_safe=False,
 ) 
