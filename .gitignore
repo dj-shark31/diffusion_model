@@ -1,0 +1,24 @@
+# Checkpoints
+checkpoints/*.pth
+
+# Data
+data/MNIST
+
+# Evaluation results
+evaluation_results/*.pkl
+evaluation_results/*.txt
+
+# Logs
+logs/test*
+
+# Generated samples
+samples/test*
+
+# Configs
+configs/__pycache__
+
+# Visualization
+visualize_dataset/
+
+# OS
+.DS_Store
