@@ -20,6 +20,7 @@ TRAINING_CONFIG = {
     'warmup_steps': 200,
     'weight_decay': 1e-4,
     'num_workers': 4,
+    'optimizer_type': 'adamw',
     'max_grad_norm': 1.0,
     'ema_decay': 0.9999,
     'save_every': 10,

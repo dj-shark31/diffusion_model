@@ -1,3 +1,10 @@
+"""
+VAE Trainer for training Variational Autoencoders.
+
+This module provides a complete training pipeline for VAEs,
+reusing functions from the diffusion module for consistency.
+"""
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -9,23 +16,29 @@ import argparse
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import numpy as np
+from typing import Dict, Any, Optional
 
 # Import our modules
-from diffusion.model import UNetMini
-from diffusion.schedulers import DDPMScheduler
-from diffusion.losses import DDPMLoss
-from diffusion.utils import EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, get_device, log_hyperparameters, create_lr_scheduler
+from vae.model import VAE
+from vae.losses import VAELoss, BetaVAELoss
+from diffusion.utils import (
+    EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, 
+    get_device, log_hyperparameters, create_lr_scheduler, create_optimizer,
+    create_dataloader, print_model_summary
+)
+from diffusion.train import plot_losses
+import torchvision.utils as vutils
 
 
-class Trainer:
+class VAETrainer:
     """
-    DDPM Trainer for MNIST dataset.
+    VAE Trainer for MNIST dataset.
     Handles training loop, logging, and checkpointing.
     """
     
-    def __init__(self, config):
+    def __init__(self, config: Dict[str, Any]):
         """
-        Initialize the trainer.
+        Initialize the VAE trainer.
         
         Args:
             config: Configuration dictionary
@@ -37,39 +50,45 @@ class Trainer:
         # Set seed for reproducibility
         set_seed(config['seed'])
         
-        # Create model, scheduler, and loss
-        self.model = UNetMini(
-            image_size=config['image_size'],
+        # Create VAE model
+        self.model = VAE(
             in_channels=config['in_channels'],
-            out_channels=config['out_channels'],
-            model_channels=config['model_channels'],
-            time_emb_dim=config['time_emb_dim']
+            hidden_dims=config['hidden_dims'],
+            latent_dim=config['latent_dim'],
+            image_size=config['image_size']
         )
         
-        self.scheduler = DDPMScheduler(
-            num_train_timesteps=config['num_train_timesteps'],
-            beta_start=config['beta_start'],
-            beta_end=config['beta_end'],
-            beta_schedule=config['beta_schedule']
-        )
+        # Create loss function
+        if config['loss_type'] == 'beta_vae':
+            self.loss_fn = BetaVAELoss(
+                beta_start=config['beta_start'],
+                beta_end=config['beta_end'],
+                beta_steps=config['beta_steps'],
+                loss_type=config['reconstruction_loss_type']
+            )
+        else:
+            self.loss_fn = VAELoss(
+                beta=config['beta'],
+                loss_type=config['reconstruction_loss_type']
+            )
         
-        self.loss_fn = DDPMLoss(loss_type=config['loss_type'])
-        
-        # Create optimizer and learning rate scheduler
-        self.optimizer = optim.AdamW(
-            self.model.parameters(),
-            lr=config['learning_rate'],
+        # Create optimizer
+        self.optimizer = create_optimizer(
+            self.model,
+            optimizer_type=config['optimizer_type'],
+            learning_rate=config['learning_rate'],
             weight_decay=config['weight_decay']
         )
         
+        # Create learning rate scheduler
         self.lr_scheduler = create_lr_scheduler(
             optimizer=self.optimizer,
-            num_training_steps=config['num_epochs'] * config['steps_per_epoch'],
             scheduler_type=config['scheduler_type'],
+            num_training_steps=config['num_epochs'] * config['steps_per_epoch'],
             warmup_steps=config['warmup_steps']
         )
         
-        # Create EMA model and move to device
+        # Create EMA model
         self.ema = EMA(self.model, decay=config['ema_decay'])
         
         # Training state
@@ -87,9 +106,12 @@ class Trainer:
         os.makedirs(config['checkpoint_dir'], exist_ok=True)
         os.makedirs(config['log_dir'], exist_ok=True)
         os.makedirs(config['sample_dir'], exist_ok=True)
-
+        
         # Log hyperparameters
         log_hyperparameters(config, config['log_dir'])
+        
+        # Print model summary
+        print_model_summary(self.model)
         
         # Load checkpoint if exists
         if config['resume_from']:
@@ -106,7 +128,7 @@ class Trainer:
         transform = transforms.Compose([
             transforms.Resize(self.config['image_size']),
             transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])  # Normalize to [-1, 1]
+            # Normalize to [0, 1] for VAE (since we use sigmoid in decoder)
         ])
         
         # Load MNIST dataset
@@ -124,9 +146,7 @@ class Trainer:
             transform=transform
         )
         
-        # Create dataloaders using utility function
-        from diffusion.utils import create_dataloader
-        
+        # Create dataloaders
         train_loader = create_dataloader(
             train_dataset,
             batch_size=self.config['batch_size'],
@@ -153,29 +173,23 @@ class Trainer:
             batch: Batch of images
             
         Returns:
-            Loss value
+            Dictionary containing loss values
         """
         images = batch[0].to(self.device)
-        batch_size = images.shape[0]
         
-        # Sample random timesteps
-        timesteps = torch.randint(
-            0, self.config['num_train_timesteps'], 
-            (batch_size,), device=self.device
-        ).long()
+        # Forward pass
+        recon_images, mu, log_var = self.model(images)
         
-        # Add noise to images
-        noisy_images, noise = self.scheduler.add_noise(images, timesteps)
-        
-        # Predict noise
-        predicted_noise = self.model(noisy_images, timesteps)
+        # Update beta if using beta-VAE
+        if isinstance(self.loss_fn, BetaVAELoss):
+            self.loss_fn.update_beta(self.global_step)
         
         # Compute loss
-        loss = self.loss_fn(predicted_noise, noise)
+        total_loss, recon_loss, kl_loss = self.loss_fn(recon_images, images, mu, log_var)
         
         # Backward pass
         self.optimizer.zero_grad()
-        loss.backward()
+        total_loss.backward()
         
         # Gradient clipping
         gradient_clip(self.model, self.config['max_grad_norm'])
@@ -187,7 +201,12 @@ class Trainer:
         # Update EMA
         self.ema.update(self.model)
         
-        return loss.item()
+        return {
+            'total_loss': total_loss.item(),
+            'recon_loss': recon_loss.item(),
+            'kl_loss': kl_loss.item(),
+            'beta': self.loss_fn.beta if hasattr(self.loss_fn, 'beta') else self.config['beta']
+        }
     
     def validate(self, val_loader):
         """
@@ -197,37 +216,38 @@ class Trainer:
             val_loader: Validation dataloader
             
         Returns:
-            Average validation loss
+            Dictionary containing validation metrics
         """
         self.model.eval()
         total_loss = 0
+        total_recon_loss = 0
+        total_kl_loss = 0
         num_batches = 0
         
         with torch.no_grad():
             for batch in val_loader:
                 images = batch[0].to(self.device)
-                batch_size = images.shape[0]
                 
-                # Sample random timesteps
-                timesteps = torch.randint(
-                    0, self.config['num_train_timesteps'], 
-                    (batch_size,), device=self.device
-                ).long()
-                
-                # Add noise to images
-                noisy_images, noise = self.scheduler.add_noise(images, timesteps)
-                
-                # Predict noise
-                predicted_noise = self.model(noisy_images, timesteps)
+                # Forward pass
+                recon_images, mu, log_var = self.model(images)
                 
                 # Compute loss
-                loss = self.loss_fn(predicted_noise, noise)
+                batch_total_loss, batch_recon_loss, batch_kl_loss = self.loss_fn(
+                    recon_images, images, mu, log_var
+                )
                 
-                total_loss += loss.item()
+                total_loss += batch_total_loss.item()
+                total_recon_loss += batch_recon_loss.item()
+                total_kl_loss += batch_kl_loss.item()
                 num_batches += 1
         
         self.model.train()
-        return total_loss / num_batches
+        
+        return {
+            'val_total_loss': total_loss / num_batches,
+            'val_recon_loss': total_recon_loss / num_batches,
+            'val_kl_loss': total_kl_loss / num_batches
+        }
     
     def save_checkpoint(self, is_best=False, normal_save=False):
         """
@@ -236,12 +256,12 @@ class Trainer:
         Args:
             is_best: Whether this is the best model so far
         """
-        
         if normal_save:
             checkpoint_path = os.path.join(
                 self.config['checkpoint_dir'], 
                 f"checkpoint_epoch_{self.current_epoch}.pth"
             )
+        
             save_checkpoint(
                 model=self.model,
                 optimizer=self.optimizer,
@@ -281,7 +301,46 @@ class Trainer:
         
         self.current_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint['loss']
-        print(f"Resumed from epoch {self.current_epoch}")
+        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
+    
+    def generate_samples(self, num_samples=16, nrow=4):
+        """
+        Generate sample images from the VAE.
+        
+        Args:
+            num_samples: Number of samples to generate
+        """
+        self.model.eval()
+        
+        with torch.no_grad():
+            # Generate samples
+            samples = self.model.sample(num_samples=num_samples)
+            
+            # Save samples
+            samples_path = os.path.join(
+                self.config['sample_dir'], 
+                f"samples_epoch_{self.current_epoch}.png"
+            )
+            
+            # Convert to grid and save
+            self._save_image_grid(samples, samples_path, nrow=nrow)
+        
+        self.model.train()
+    
+    def _save_image_grid(self, images, filepath, nrow=4):
+        """
+        Save images as a grid.
+        
+        Args:
+            images: Tensor of images
+            filepath: Path to save the grid
+            nrow: Number of samples per row
+        """
+        # Create grid
+        grid = vutils.make_grid(images, nrow=nrow, normalize=False, padding=2)
+        
+        # Save grid
+        vutils.save_image(grid, filepath)
     
     def log_metrics(self, train_loss, val_loss, epoch):
         """
@@ -299,14 +358,13 @@ class Trainer:
         
         # Print to console
         print(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
-    
+
     def train(self):
         """
         Main training loop.
         """
-        print("Starting training...")
-        print(f"Device: {self.device}")
-        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"Starting VAE training on {self.device}")
+        print(f"Experiment: {self.experiment_name}")
         
         # Create dataloaders
         train_loader, val_loader = self.create_dataloaders()
@@ -318,97 +376,51 @@ class Trainer:
             # Training phase
             self.model.train()
             train_losses = []
+            pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.config['num_epochs']}")
             
-            train_pbar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{self.config['num_epochs']}")
-            for batch in train_pbar:
-                loss = self.train_step(batch)
-                train_losses.append(loss)
+            for batch_idx, batch in enumerate(pbar):
+                # Training step
+                step_losses = self.train_step(batch)
+                train_losses.append(step_losses)
                 
                 # Update progress bar
-                train_pbar.set_postfix({
-                    'loss': f'{loss:.6f}',
-                    'lr': f'{self.optimizer.param_groups[0]["lr"]:.6f}'
+                pbar.set_postfix({
+                    'Total Loss': f"{step_losses['total_loss']:.4f}",
+                    'Recon Loss': f"{step_losses['recon_loss']:.4f}",
+                    'KL Loss': f"{step_losses['kl_loss']:.4f}",
+                    'Beta': f"{step_losses['beta']:.4f}"
                 })
                 
                 self.global_step += 1
+                
+                # Generate samples periodically
+                if self.global_step % self.config['sample_every'] == 0:
+                    self.generate_samples()
             
             # Validation phase
-            val_loss = self.validate(val_loader)
-            avg_train_loss = np.mean(train_losses)
+            val_metrics = self.validate(val_loader)
             
             # Log metrics
-            self.log_metrics(avg_train_loss, val_loss, epoch + 1)
+            avg_train_loss = np.mean([l['total_loss'] for l in train_losses])
+            avg_train_recon = np.mean([l['recon_loss'] for l in train_losses])
+            avg_train_kl = np.mean([l['kl_loss'] for l in train_losses])
             
-            # Save checkpoint
-            if val_loss < self.best_loss:
-                self.best_loss = val_loss
+            self.log_metrics(avg_train_loss, val_metrics['val_total_loss'], epoch + 1)
+            
+            # Save checkpoint if new best loss
+            if val_metrics['val_total_loss'] < self.best_loss:
+                self.best_loss = val_metrics['val_total_loss']
                 self.save_checkpoint(is_best=True)
             
+            # Save checkpoint every N epochs
             if (epoch + 1) % self.config['save_every'] == 0:
                 self.save_checkpoint(normal_save=True)
             
-            # Generate samples periodically
+            # Generate samples at end of epoch
             if (epoch + 1) % self.config['sample_every'] == 0:
-                self.generate_samples(epoch + 1)
+                self.generate_samples()
         
         print("Training completed!")
-    
-    def generate_samples(self, epoch, num_samples=4):
-        """
-        Generate and save sample images.
-        
-        Args:
-            epoch: Current epoch
-            num_samples: Number of samples to generate
-        """
-        from diffusion.sampler import AncestralSampler
-        
-        # Use EMA model for generation
-        self.ema.apply_shadow(self.model)
-        self.model.eval()
-        
-        # Create sampler
-        sampler = AncestralSampler(self.scheduler, num_inference_steps=1000)
-        
-        # Generate samples
-        with torch.no_grad():
-            samples = sampler(
-                self.model, 
-                (num_samples, 1, self.config['image_size'], self.config['image_size']),
-                progress_bar=False
-            )
-        
-        # Denormalize samples
-        samples = (samples + 1) / 2  # Convert from [-1, 1] to [0, 1]
-        samples = torch.clamp(samples, 0, 1)
-        
-        # Save samples
-        sample_path = os.path.join(self.config['sample_dir'], f"samples_epoch_{epoch}.png")
-        self.save_image_grid(samples, sample_path, nrow=4)
-        
-        # Restore original model
-        self.ema.restore(self.model)
-        self.model.train()
-        
-        print(f"Samples saved to {sample_path}")
-    
-    def save_image_grid(self, images, filepath, nrow=4):
-        """
-        Save a grid of images.
-        
-        Args:
-            images: Tensor of images
-            filepath: Path to save the grid
-            nrow: Number of images per row
-        """
-        import torchvision.utils as vutils
-        
-        # Create grid
-        grid = vutils.make_grid(images, nrow=nrow, normalize=False, padding=2)
-        
-        # Save grid
-        vutils.save_image(grid, filepath)
-
 
 def get_default_config():
     """
@@ -421,46 +433,43 @@ def get_default_config():
         # Model parameters
         'image_size': 32,
         'in_channels': 1,
-        'out_channels': 1,
-        'model_channels': 64,
-        'time_emb_dim': 128,
+        'hidden_dims': [32, 64, 128],
+        'latent_dim': 128,
         
         # Training parameters
         'num_epochs': 100,
         'batch_size': 128,
         'learning_rate': 1e-4,
-        'scheduler_type': 'cosine',
+        'scheduler_type': 'cosine', # 'cosine' or 'linear' or 'constant'
         'warmup_steps': 1000,
         'weight_decay': 1e-4,
         'num_workers': 4,
-        
-        # Diffusion parameters
-        'num_train_timesteps': 1000,
-        'beta_start': 0.0001,
-        'beta_end': 0.02,
-        'beta_schedule': 'linear',
-        
-        # Loss parameters
-        'loss_type': 'l2',
-        
-        # Optimization parameters
+        'optimizer_type': 'adamw', # 'adamw' or 'adam' or 'sgd'
         'max_grad_norm': 1.0,
         'ema_decay': 0.9999,
-        
-        # Logging and saving
         'save_every': 10,
         'sample_every': 5,
+        'seed': 42,
+        'resume_from': None,
+        'steps_per_epoch': 469,  # MNIST train size / batch_size
+
+        # Loss parameters
+        'loss_type': 'vae', # 'vae' or 'beta_vae'
+        'reconstruction_loss_type': 'mse', # 'mse' or 'bce'
+        'beta': 1.0,
+        'beta_start': 0.0,
+        'beta_end': 1.0,
+        'beta_steps': 1000,
+        
+        # Logging and saving
         'checkpoint_dir': 'checkpoints',
         'log_dir': 'logs',
         'sample_dir': 'samples',
         'data_dir': 'data',
         'results_dir': 'evaluation_results',
-        'experiment_name': 'test',
-        
-        # Misc
-        'seed': 42,
-        'resume_from': None,
-        'steps_per_epoch': 469,  # MNIST train size / batch_size
+        'experiment_name': 'test_VAE',
+
+
     }
 
 def load_config(config_path: str) -> dict:
@@ -488,58 +497,17 @@ def load_config(config_path: str) -> dict:
     
     return config
 
-def plot_losses(log_file: str, save_path: str):
-    """
-    Plot training and validation losses from training log.
-    
-    Args:
-        log_file: Path to training log file
-        save_path: Path to save the plot
-    """
-    train_losses = []
-    val_losses = []
-    epochs = []
-    
-    # Extract losses from log file
-    with open(log_file, 'r') as f:
-        for line in f:
-            if line.startswith('Epoch'):
-                # Parse line like "Epoch X: Train Loss: 0.123456, Val Loss: 0.123456"
-                parts = line.strip().split(':')
-                epoch = int(parts[0].split()[1])
-                train_loss = float(parts[2].split(',')[0])
-                val_loss = float(parts[3])
-                
-                epochs.append(epoch)
-                train_losses.append(train_loss)
-                val_losses.append(val_loss)
-    
-    # Create plot
-    plt.figure(figsize=(10, 5))
-    plt.plot(epochs, train_losses, label='Training Loss')
-    plt.plot(epochs, val_losses, label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss Over Time')
-    plt.legend()
-    plt.grid(True)
-    
-    # Save plot
-    plt.savefig(save_path)
-    plt.close()
-
-
-
 def main():
     """
-    Main training function.
+    Main function to run VAE training.
     """
-    parser = argparse.ArgumentParser(description='Train DDPM on MNIST')
+    parser = argparse.ArgumentParser(description="Train VAE on MNIST")
     parser.add_argument('--config', type=str, help='Path to config file')
     parser.add_argument('--resume', type=str, help='Path to checkpoint to resume from')
     parser.add_argument('--epochs', type=int, help='Number of epochs')
     parser.add_argument('--batch-size', type=int, help='Batch size')
     parser.add_argument('--lr', type=float, help='Learning rate')
+    
     
     args = parser.parse_args()
     
@@ -548,7 +516,7 @@ def main():
         config = load_config(args.config)
     else:
         config = get_default_config()
-    
+
     # Override with command line arguments
     if args.epochs:
         config['num_epochs'] = args.epochs
@@ -558,9 +526,9 @@ def main():
         config['learning_rate'] = args.lr
     if args.resume:
         config['resume_from'] = args.resume
-    
+
     # Create trainer and start training
-    trainer = Trainer(config)
+    trainer = VAETrainer(config)
     trainer.train()
 
     # Plot losses
@@ -569,4 +537,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main() 
+    main()
