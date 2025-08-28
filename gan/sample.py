@@ -1,7 +1,7 @@
 """
-VAE Sampler for generating images from trained Variational Autoencoders.
+GAN Sampler for generating images from trained Generative Adversarial Networks.
 
-This module provides functionality to load trained VAE models and
+This module provides functionality to load trained GAN models and
 generate new images from the latent space.
 """
 
@@ -16,49 +16,53 @@ import pickle
 import torchvision.utils as vutils
 
 # Import our modules
-from vae.model import VAE
-from diffusion.utils import get_device, load_checkpoint
+from gan.model import GAN
+
+# Import utility functions from diffusion module
+from diffusion.utils import get_device
 
 
-class VAESampler:
+class GANSampler:
     """
-    VAE Sampler for generating images from trained models.
+    GAN Sampler for generating images from trained models.
     
     Provides various sampling strategies and visualization tools
-    for exploring the latent space of trained VAEs.
+    for exploring the latent space of trained GANs.
     """
     
     def __init__(self, model_path: str):
         """
-        Initialize VAE sampler.
+        Initialize GAN sampler.
         
         Args:
-            model_path: Path to trained VAE model checkpoint
+            model_path: Path to trained GAN model checkpoint
+            device: Device to use for sampling
         """
         self.device = get_device()
         self.model_path = model_path
         
         # Load model
-        self.model = self._load_model(model_path)   
+        self.model = self._load_model(model_path)
         self.model.eval()
         
-        print(f"Loaded VAE model from {model_path}")
-        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"Loaded GAN model from {model_path}")
+        print(f"Generator parameters: {sum(p.numel() for p in self.model.generator.parameters()):,}")
+        print(f"Discriminator parameters: {sum(p.numel() for p in self.model.discriminator.parameters()):,}")
         print(f"Latent dimension: {self.model.latent_dim}")
         print(f"Hidden dimensions: {self.model.hidden_dims}")
         print(f"Input channels: {self.model.in_channels}")
         print(f"Image size: {self.model.image_size}")
         print(f"Using device: {self.device}")
     
-    def _load_model(self, model_path: str) -> VAE:
+    def _load_model(self, model_path: str) -> GAN:
         """
-        Load VAE model from checkpoint.
+        Load GAN model from checkpoint.
         
         Args:
             model_path: Path to model checkpoint
             
         Returns:
-            Loaded VAE model
+            Loaded GAN model
         """
         # Load checkpoint
         checkpoint = torch.load(model_path, map_location=self.device)
@@ -72,11 +76,11 @@ class VAESampler:
             config = self._extract_model_config(model_state)
             
             # Create model with extracted configuration
-            model = VAE(
-                in_channels=config['in_channels'],
-                hidden_dims=config['hidden_dims'],
+            model = GAN(
                 latent_dim=config['latent_dim'],
-                image_size=config['image_size'],
+                hidden_dims=config['hidden_dims'],
+                in_channels=config['in_channels'],
+                image_size=config['image_size']
             )
             
             # Load state dict
@@ -93,18 +97,17 @@ class VAESampler:
         Extract model configuration from state dict.
         
         Args:
-            model_state: Model state dictionary
+            model_state: GAN state dictionary
             
         Returns:
             Configuration dictionary
         """
-        for key in sorted(model_state.keys()):
-            print(key, model_state[key].shape)
         config = {}
+        
         # Extract latent dimension
         for key in model_state.keys():
-            if 'encoder.fc_mu.weight' in key:
-                config['latent_dim'] = model_state[key].shape[0]
+            if 'generator.fc.weight' in key:
+                config['latent_dim'] = model_state[key].shape[1]
                 break
         
         if 'latent_dim' not in config:
@@ -114,26 +117,32 @@ class VAESampler:
         # and input channels from discriminator
         hidden_dims = []
         for key in sorted(model_state.keys()):
-            if 'encoder.encoder' in key and '.weight' in key and len(model_state[key].shape) == 4:
+            if 'generator.generator' in key and '.weight' in key and len(model_state[key].shape) == 4:
                 # Extract layer number and output channels
                 hidden_dims.append(model_state[key].shape[0])
 
-            if 'encoder.encoder.0.weight' in key:  # First conv layer
+            if 'discriminator.discriminator.0.weight' in key:  # First conv layer
                 config['in_channels'] = model_state[key].shape[1]
-
+        
         if not hidden_dims:
             # Default configuration if we can't extract
-            hidden_dims = [32, 64, 128]
+            hidden_dims = [1024, 512, 256, 128]
             print("Warning: Could not extract hidden dimensions, using default")
         
         config['hidden_dims'] = hidden_dims
         
+        if 'in_channels' not in config:
+            config['in_channels'] = 1  # Default for MNIST
+        
         # Extract image size
         for key in model_state.keys():
-            if 'encoder.fc_mu.weight' in key:
-                conv_output_size = int(np.sqrt(model_state[key].shape[1] / (config['hidden_dims'][-1])))
-                config['image_size'] = conv_output_size * (2 ** len(config['hidden_dims']))
+            if 'generator.fc.weight' in key:
+                initial_size = int(np.sqrt(model_state[key].shape[0] / (config['hidden_dims'][0])))
+                config['image_size'] = initial_size * (2 ** len(config['hidden_dims']))
                 break
+        
+        if 'image_size' not in config:
+            config['image_size'] = 32
         
         print(f"Extracted model configuration:")
         print(f"  Latent dimension: {config['latent_dim']}")
@@ -145,7 +154,7 @@ class VAESampler:
     
     def sample_random(self, num_samples: int = 16) -> torch.Tensor:
         """
-        Sample random images from the VAE.
+        Sample random images from the GAN.
         
         Args:
             num_samples: Number of samples to generate
@@ -170,7 +179,7 @@ class VAESampler:
         """
         z = z.to(self.device)
         with torch.no_grad():
-            samples = self.model.decoder(z)
+            samples = self.model.generate(z)
         
         return samples
     
@@ -203,7 +212,7 @@ class VAESampler:
         
         # Generate images
         with torch.no_grad():
-            samples = self.model.decoder(interpolated_z)
+            samples = self.model.generate(interpolated_z)
         
         return samples
     
@@ -239,37 +248,42 @@ class VAESampler:
         
         # Generate images
         with torch.no_grad():
-            samples = self.model.decoder(traversed_z)
+            samples = self.model.generate(traversed_z)
         
         return samples
     
-    def encode_images(self, images: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    def generate_latent_grid(self, num_samples: int = 8, 
+                           range_min: float = -3.0, range_max: float = 3.0) -> torch.Tensor:
         """
-        Encode images to get their latent representations.
+        Generate a grid of samples by varying two latent dimensions.
         
         Args:
-            images: Input images
+            num_samples: Number of samples per dimension
+            range_min: Minimum value for latent dimensions
+            range_max: Maximum value for latent dimensions
             
         Returns:
-            Tuple of (mu, log_var) for latent distribution
+            Grid of generated images
         """
-        images = images.to(self.device)
+        # Create grid of latent values
+        values = torch.linspace(range_min, range_max, num_samples, device=self.device)
+        
+        # Create grid of latent vectors
+        z_grid = []
+        for i in range(num_samples):
+            for j in range(num_samples):
+                z = torch.zeros(1, self.model.latent_dim, device=self.device)
+                z[0, 0] = values[i]  # First dimension
+                z[0, 1] = values[j]  # Second dimension
+                z_grid.append(z)
+        
+        z_grid = torch.cat(z_grid, dim=0)
+        
+        # Generate images
         with torch.no_grad():
-            mu, log_var = self.model.encoder(images)
+            samples = self.model.generate(z_grid)
         
-        return mu, log_var
-    
-    def get_latent_representation(self, images: torch.Tensor) -> torch.Tensor:
-        """
-        Get deterministic latent representation (mean) of images.
-        
-        Args:
-            images: Input images
-            
-        Returns:
-            Latent representations
-        """
-        return self.encode_images(images)[0]
+        return samples
     
     def save_samples(self, samples: torch.Tensor, filepath: str, 
                     nrow: int = 4):
@@ -299,7 +313,7 @@ class VAESampler:
         
         # Save grid
         vutils.save_image(grid, filepath)
-
+        
         print(f"Saved samples to {filepath}")
     
     def save_interpolation(self, interpolated_samples: torch.Tensor, 
@@ -311,7 +325,6 @@ class VAESampler:
             interpolated_samples: Interpolated image tensor
             filepath: Path to save the image
             title: Title for the plot
-            nrow: Number of samples per row
         """
         # Create grid
         grid = vutils.make_grid(interpolated_samples, nrow=nrow, normalize=False, padding=2)
@@ -331,6 +344,7 @@ class VAESampler:
         
         # Save grid
         vutils.save_image(grid, filepath)
+        
         print(f"Saved interpolation to {filepath}")
     
     def save_traversal(self, traversed_samples: torch.Tensor, 
@@ -363,40 +377,8 @@ class VAESampler:
         
         # Save grid
         vutils.save_image(grid, filepath)
+        
         print(f"Saved traversal to {filepath}")
-    
-    def generate_latent_grid(self, num_samples: int = 8, 
-                           range_min: float = -3.0, range_max: float = 3.0) -> torch.Tensor:
-        """
-        Generate a grid of samples by varying two latent dimensions.
-        
-        Args:
-            num_samples: Number of samples per dimension
-            range_min: Minimum value for latent dimensions
-            range_max: Maximum value for latent dimensions
-            
-        Returns:
-            Grid of generated images
-        """
-        # Create grid of latent values
-        values = torch.linspace(range_min, range_max, num_samples, device=self.device)
-        
-        # Create grid of latent vectors
-        z_grid = []
-        for i in range(num_samples):
-            for j in range(num_samples):
-                z = torch.zeros(1, self.model.latent_dim, device=self.device)
-                z[0, 0] = values[i]  # First dimension
-                z[0, 1] = values[j]  # Second dimension
-                z_grid.append(z)
-        
-        z_grid = torch.cat(z_grid, dim=0)
-        
-        # Generate images
-        with torch.no_grad():
-            samples = self.model.decoder(z_grid)
-        
-        return samples
     
     def save_latent_grid(self, samples: torch.Tensor, filepath: str,
                         num_samples: int = 8, range_min: float = -3.0, range_max: float = 3.0):
@@ -410,10 +392,11 @@ class VAESampler:
             range_min: Minimum value for latent dimensions
             range_max: Maximum value for latent dimensions
         """
-        samples_np = samples.cpu().numpy()
+        samples_np = (samples.cpu().numpy() + 1) / 2
+        samples_np = np.clip(samples_np, 0, 1)
         
         # Reshape to grid
-        samples_grid = samples_np.reshape(num_samples, num_samples, 1, 32, 32)
+        samples_grid = samples_np.reshape(num_samples, num_samples, 1, 28, 28)
         
         # Create figure
         fig, axes = plt.subplots(num_samples, num_samples, figsize=(12, 12))
@@ -432,7 +415,7 @@ class VAESampler:
 
 def main():
     """
-    Main function for VAE sampling.
+    Main function for GAN sampling.
     """
     parser = argparse.ArgumentParser(description="Sample from trained VAE")
     
@@ -463,7 +446,7 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Create sampler
-    sampler = VAESampler(args.model_path)
+    sampler = GANSampler(args.model_path)
     
     # Generate random samples
     print("Generating random samples...")

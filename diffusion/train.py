@@ -14,7 +14,7 @@ import numpy as np
 from diffusion.model import UNetMini
 from diffusion.schedulers import DDPMScheduler
 from diffusion.losses import DDPMLoss
-from diffusion.utils import EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, get_device, log_hyperparameters, create_lr_scheduler
+from diffusion.utils import EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, get_device, log_hyperparameters, create_lr_scheduler, log_metrics, plot_losses, load_config
 
 
 class Trainer:
@@ -282,24 +282,7 @@ class Trainer:
         self.current_epoch = checkpoint['epoch'] + 1
         self.best_loss = checkpoint['loss']
         print(f"Resumed from epoch {self.current_epoch}")
-    
-    def log_metrics(self, train_loss, val_loss, epoch):
-        """
-        Log training metrics.
-        
-        Args:
-            train_loss: Training loss
-            val_loss: Validation loss
-            epoch: Current epoch
-        """
-        # Log to file
-        log_file = os.path.join(self.config['log_dir'], "training_log.txt")
-        with open(log_file, "a") as f:
-            f.write(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}\n")
-        
-        # Print to console
-        print(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
-    
+
     def train(self):
         """
         Main training loop.
@@ -337,7 +320,7 @@ class Trainer:
             avg_train_loss = np.mean(train_losses)
             
             # Log metrics
-            self.log_metrics(avg_train_loss, val_loss, epoch + 1)
+            log_metrics(self.config['log_dir'], avg_train_loss, val_loss, epoch + 1)
             
             # Save checkpoint
             if val_loss < self.best_loss:
@@ -463,72 +446,6 @@ def get_default_config():
         'steps_per_epoch': 469,  # MNIST train size / batch_size
     }
 
-def load_config(config_path: str) -> dict:
-    """
-    Load configuration from a Python file.
-    
-    Args:
-        config_path: Path to configuration file
-        
-    Returns:
-        Configuration dictionary
-    """
-    # Get default config first
-    config = get_default_config()
-    
-    # Load the config module
-    import importlib
-    spec = importlib.util.spec_from_file_location("config", config_path)
-    config_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(config_module)
-    
-    # Update with values from config file if they exist
-    if hasattr(config_module, 'DEFAULT_CONFIG'):
-        config.update(config_module.DEFAULT_CONFIG)
-    
-    return config
-
-def plot_losses(log_file: str, save_path: str):
-    """
-    Plot training and validation losses from training log.
-    
-    Args:
-        log_file: Path to training log file
-        save_path: Path to save the plot
-    """
-    train_losses = []
-    val_losses = []
-    epochs = []
-    
-    # Extract losses from log file
-    with open(log_file, 'r') as f:
-        for line in f:
-            if line.startswith('Epoch'):
-                # Parse line like "Epoch X: Train Loss: 0.123456, Val Loss: 0.123456"
-                parts = line.strip().split(':')
-                epoch = int(parts[0].split()[1])
-                train_loss = float(parts[2].split(',')[0])
-                val_loss = float(parts[3])
-                
-                epochs.append(epoch)
-                train_losses.append(train_loss)
-                val_losses.append(val_loss)
-    
-    # Create plot
-    plt.figure(figsize=(10, 5))
-    plt.plot(epochs, train_losses, label='Training Loss')
-    plt.plot(epochs, val_losses, label='Validation Loss')
-    plt.xlabel('Epochs')
-    plt.ylabel('Loss')
-    plt.title('Training and Validation Loss Over Time')
-    plt.legend()
-    plt.grid(True)
-    
-    # Save plot
-    plt.savefig(save_path)
-    plt.close()
-
-
 
 def main():
     """
@@ -544,10 +461,10 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
+    config = get_default_config()
     if args.config:
-        config = load_config(args.config)
-    else:
-        config = get_default_config()
+        config = load_config(args.config, config)
+    
     
     # Override with command line arguments
     if args.epochs:

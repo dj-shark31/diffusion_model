@@ -1,12 +1,12 @@
 """
-Default configuration for VAE training on MNIST.
+Default configuration for GAN training on MNIST.
 """
 
 # Model configuration
 MODEL_CONFIG = {
     'image_size': 32,
     'in_channels': 1,
-    'hidden_dims': [32, 64, 128],
+    'hidden_dims': [256, 128, 64],
     'latent_dim': 128,
 }
 
@@ -14,7 +14,8 @@ MODEL_CONFIG = {
 TRAINING_CONFIG = {
     'num_epochs': 100,
     'batch_size': 128,
-    'learning_rate': 1e-4,
+    'g_learning_rate': 1e-4,
+    'd_learning_rate': 1e-4,
     'scheduler_type': 'cosine', # 'cosine' or 'linear' or 'constant'
     'warmup_steps': 1000,
     'weight_decay': 1e-4,
@@ -29,12 +30,10 @@ TRAINING_CONFIG = {
 
 # Diffusion configuration
 LOSS_CONFIG = {
-    'loss_type': 'vae', # 'vae' or 'beta_vae'
-    'reconstruction_loss_type': 'mse', # 'mse' or 'bce'
-    'beta': 1.0,
-    'beta_start': 0.0,
-    'beta_end': 1.0,
-    'beta_steps': 1000,
+    'loss_type': 'gan', # 'gan' or 'wasserstein' or 'hinge'
+    'label_smoothing': 0.1,
+    'use_feature_matching': False,
+    'feature_weight': 1.0,
 }
 
 # Paths configuration
@@ -44,7 +43,7 @@ PATHS_CONFIG = {
     'sample_dir': 'samples',
     'data_dir': 'data',
     'results_dir': 'evaluation_results',
-    'experiment_name': 'test_VAE',
+    'experiment_name': 'test_GAN',
 }
 
 # Combine all configurations

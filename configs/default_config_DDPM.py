@@ -13,8 +13,8 @@ MODEL_CONFIG = {
 
 # Training configuration
 TRAINING_CONFIG = {
-    'num_epochs': 50,
-    'batch_size': 64,
+    'num_epochs': 100,
+    'batch_size': 128,
     'learning_rate': 1e-4,
     'scheduler_type': 'cosine', # 'cosine' or 'linear' or 'constant'
     'warmup_steps': 200,
@@ -44,7 +44,7 @@ PATHS_CONFIG = {
     'sample_dir': 'samples',
     'data_dir': 'data',
     'results_dir': 'evaluation_results',
-    'experiment_name': 'test_2',
+    'experiment_name': 'test_DDPM',
 }
 
 # Sampling configuration
@@ -70,5 +70,5 @@ DEFAULT_CONFIG = {
     **SAMPLING_CONFIG,
     **EVALUATION_CONFIG,
     'resume_from': None,
-    'steps_per_epoch': 938,  # MNIST train size (60,000) / batch_size
+    'steps_per_epoch': 469,  # MNIST train size (60,000) / batch_size
 } 

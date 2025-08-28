@@ -145,7 +145,7 @@ class Decoder(nn.Module):
         
         # Final layer to output channels
         modules.extend([
-            nn.ConvTranspose2d(in_channels, out_channels, 
+            nn.ConvTranspose2d(in_channels, self.out_channels, 
                               kernel_size=3, stride=2, padding=1, output_padding=1),
             nn.Sigmoid()  # Output values between 0 and 1
         ])

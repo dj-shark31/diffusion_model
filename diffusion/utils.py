@@ -5,7 +5,7 @@ import numpy as np
 import os
 from typing import Dict, Any, Optional
 import copy
-
+import matplotlib.pyplot as plt
 
 class EMA:
     """
@@ -266,6 +266,26 @@ def log_hyperparameters(config: Dict[str, Any], log_dir: str = "logs"):
         for key, value in config.items():
             f.write(f"{key}: {value}\n")
 
+def log_metrics(log_dir: str, train_loss, val_loss, epoch):
+        """
+        Log training metrics.
+        
+        Args:
+            train_loss: Training loss
+            val_loss: Validation loss
+            epoch: Current epoch
+        """
+        # Log to file
+        log_file = os.path.join(log_dir, "training_log.txt")
+        # Create file from scratch if first epoch
+        if epoch == 1:
+            if os.path.exists(log_file):
+                os.remove(log_file)
+        with open(log_file, "a") as f:
+            f.write(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}\n")
+        
+        # Print to console
+        print(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
 
 def compute_model_size_mb(model: nn.Module) -> float:
     """
@@ -338,6 +358,70 @@ def create_dataloader(dataset, batch_size: int = 32, shuffle: bool = True,
         drop_last=True
     )
 
+def load_config(config_path: str, default_config: dict) -> dict:
+    """
+    Load configuration from a Python file.
+    
+    Args:
+        config_path: Path to configuration file
+        
+    Returns:
+        Configuration dictionary
+    """
+    # Get default config first
+    config = default_config
+    
+    # Load the config module
+    import importlib
+    spec = importlib.util.spec_from_file_location("config", config_path)
+    config_module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(config_module)
+    
+    # Update with values from config file if they exist
+    if hasattr(config_module, 'DEFAULT_CONFIG'):
+        config.update(config_module.DEFAULT_CONFIG)
+    
+    return config
+
+def plot_losses(log_file: str, save_path: str):
+    """
+    Plot training and validation losses from training log.
+    
+    Args:
+        log_file: Path to training log file
+        save_path: Path to save the plot
+    """
+    train_losses = []
+    val_losses = []
+    epochs = []
+    
+    # Extract losses from log file
+    with open(log_file, 'r') as f:
+        for line in f:
+            if line.startswith('Epoch'):
+                # Parse line like "Epoch X: Train Loss: 0.123456, Val Loss: 0.123456"
+                parts = line.strip().split(':')
+                epoch = int(parts[0].split()[1])
+                train_loss = float(parts[2].split(',')[0])
+                val_loss = float(parts[3])
+                
+                epochs.append(epoch)
+                train_losses.append(train_loss)
+                val_losses.append(val_loss)
+    
+    # Create plot
+    plt.figure(figsize=(10, 5))
+    plt.plot(epochs, train_losses, label='Training Loss')
+    plt.plot(epochs, val_losses, label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss Over Time')
+    plt.legend()
+    plt.grid(True)
+    
+    # Save plot
+    plt.savefig(save_path)
+    plt.close()
 
 if __name__ == "__main__":
     # Test utilities

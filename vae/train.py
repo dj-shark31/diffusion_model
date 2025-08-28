@@ -24,9 +24,8 @@ from vae.losses import VAELoss, BetaVAELoss
 from diffusion.utils import (
     EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, 
     get_device, log_hyperparameters, create_lr_scheduler, create_optimizer,
-    create_dataloader, print_model_summary
+    create_dataloader, print_model_summary, log_metrics, plot_losses, load_config
 )
-from diffusion.train import plot_losses
 import torchvision.utils as vutils
 
 
@@ -342,22 +341,6 @@ class VAETrainer:
         # Save grid
         vutils.save_image(grid, filepath)
     
-    def log_metrics(self, train_loss, val_loss, epoch):
-        """
-        Log training metrics.
-        
-        Args:
-            train_loss: Training loss
-            val_loss: Validation loss
-            epoch: Current epoch
-        """
-        # Log to file
-        log_file = os.path.join(self.config['log_dir'], "training_log.txt")
-        with open(log_file, "a") as f:
-            f.write(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}\n")
-        
-        # Print to console
-        print(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
 
     def train(self):
         """
@@ -405,7 +388,7 @@ class VAETrainer:
             avg_train_recon = np.mean([l['recon_loss'] for l in train_losses])
             avg_train_kl = np.mean([l['kl_loss'] for l in train_losses])
             
-            self.log_metrics(avg_train_loss, val_metrics['val_total_loss'], epoch + 1)
+            log_metrics(self.config['log_dir'], avg_train_loss, val_metrics['val_total_loss'], epoch + 1)
             
             # Save checkpoint if new best loss
             if val_metrics['val_total_loss'] < self.best_loss:
@@ -472,30 +455,6 @@ def get_default_config():
 
     }
 
-def load_config(config_path: str) -> dict:
-    """
-    Load configuration from a Python file.
-    
-    Args:
-        config_path: Path to configuration file
-        
-    Returns:
-        Configuration dictionary
-    """
-    # Get default config first
-    config = get_default_config()
-    
-    # Load the config module
-    import importlib
-    spec = importlib.util.spec_from_file_location("config", config_path)
-    config_module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(config_module)
-    
-    # Update with values from config file if they exist
-    if hasattr(config_module, 'DEFAULT_CONFIG'):
-        config.update(config_module.DEFAULT_CONFIG)
-    
-    return config
 
 def main():
     """
@@ -512,10 +471,10 @@ def main():
     args = parser.parse_args()
     
     # Load configuration
+    config = get_default_config()
     if args.config:
-        config = load_config(args.config)
-    else:
-        config = get_default_config()
+        config = load_config(args.config, config)
+
 
     # Override with command line arguments
     if args.epochs:
