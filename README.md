@@ -1,6 +1,6 @@
 # Generative Models for Image Generation
 
-A comprehensive collection of state-of-the-art generative models for image generation, implemented in PyTorch and trained on the MNIST dataset.
+A collection of generative models for image generation, implemented in PyTorch and trained on the MNIST dataset.
 
 ## Overview
 
