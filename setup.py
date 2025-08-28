@@ -7,7 +7,7 @@ def read_readme():
     if os.path.exists(readme_path):
         with open(readme_path, 'r', encoding='utf-8') as f:
             return f.read()
-    return "A PyTorch implementation of Denoising Diffusion Probabilistic Models (DDPM) for image generation."
+    return "A PyTorch implementation of ML models for image generation."
 
 # Read requirements from requirements.txt
 def read_requirements():
@@ -18,14 +18,14 @@ def read_requirements():
     return []
 
 setup(
-    name="diffusion_model",
+    name="ml-image-generators",
     version="0.1.0",
     author="David Jany",
     author_email="djany31@gmail.com",
-    description="A PyTorch implementation of DDPM (Denoising Diffusion Probabilistic Models) for image generation",
+    description="A PyTorch implementation of ML models for image generation",
     long_description=read_readme(),
     long_description_content_type="text/markdown",
-    url="https://github.com/dj-shark31/diffusion_model",
+    url="https://github.com/dj-shark31/ml-image-generators.git",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 3 - Alpha",
@@ -93,8 +93,8 @@ setup(
         "artificial-intelligence",
     ],
     project_urls={
-        "Source": "https://github.com/dj-shark31/diffusion_model",
-        "Documentation": "https://github.com/dj-shark31/diffusion_model#readme",
+        "Source": "https://github.com/dj-shark31/ml-image-generators.git",
+        "Documentation": "https://github.com/dj-shark31/ml-image-generators.git#readme",
     },
     zip_safe=False,
 ) 
