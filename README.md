@@ -46,13 +46,19 @@ diffusion_model/
 
 ## Installation
 
+### Clone repository
 ```bash
 # Clone the repository
 git clone https://github.com/dj-shark31/ml-image-generators.git
 cd diffusion_model
 
-# Install dependencies
+# Install
 pip install -e .
+```
+
+### Direct installation
+```bash
+pip install git+https://github.com/dj-shark31/ml-image-generators.git
 ```
 
 ## Usage
