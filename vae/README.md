@@ -80,7 +80,7 @@ sampler.save_interpolation(interpolated, "interpolation.png")
 ### Command Line Training
 
 ```bash
-# Train standard GAN
+# Train standard VAE
 python -m vae.train --epochs 100
 
 # Train from customized config

@@ -485,8 +485,8 @@ class GANTrainer:
                 self.best_d_loss = val_metrics['val_d_loss']
                 self.save_checkpoint(is_best=True)
             
-            #if (epoch + 1) % self.config['save_every'] == 0:
-            self.save_checkpoint(normal_save=True)
+            if (epoch + 1) % self.config['save_every'] == 0:
+                self.save_checkpoint(normal_save=True)
             
             # Generate samples at end of epoch
             if (epoch + 1) % self.config['sample_every'] == 0:
