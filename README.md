@@ -4,13 +4,13 @@ A collection of generative models for image generation, implemented in PyTorch a
 
 ## Overview
 
-This project provides complete implementations of three major generative model architectures:
+This project provides implementations of three generative model architectures:
 
 - **Diffusion Models (DDPM)**: Denoising Diffusion Probabilistic Models with UNet architecture
 - **Generative Adversarial Networks (GAN)**: DCGAN implementation with multiple loss functions
 - **Variational Autoencoders (VAE)**: CNN-based VAE with disentanglement capabilities
 
-Each model includes full training pipelines, sampling utilities, and evaluation metrics.
+Each model includes training pipelines, sampling utilities, and evaluation metrics.
 
 ## Project Structure
 
