@@ -11,13 +11,15 @@ import matplotlib.pyplot as plt
 from scipy import linalg
 from sklearn.metrics.pairwise import polynomial_kernel
 import pickle
+from gan.sample import GANSampler
+from vae.sample import VAESampler
 
 # Import our modules
 from diffusion.model import UNetMini
 from diffusion.schedulers import DDPMScheduler
 from diffusion.sampler import create_sampler
-from diffusion.utils import get_device, set_seed, load_checkpoint
-from diffusion.sample import get_default_config, load_config, Sampler
+from diffusion.utils import get_device, set_seed, load_checkpoint, create_dataloader
+from diffusion.sample import get_default_config, load_config, DDPMSampler
 
 class FIDCalculator:
     """
@@ -282,19 +284,36 @@ class PSNRCalculator:
         return psnr.cpu().numpy()
 
 
-class Evaluator(Sampler):
+class Evaluator():
     """
     Main evaluator class for DDPM models.
     """
     
-    def __init__(self, config):
+    def __init__(self, model_type, config, sampler_type='ancestral', num_inference_steps=1000, eta=0.1):
         """
         Initialize the evaluator.
         
         Args:
             config: Configuration dictionary
         """
-        super().__init__(config)
+        self.model_type = model_type
+        self.config = config
+        self.sampler_type = sampler_type
+        self.num_inference_steps = num_inference_steps
+        self.eta = eta
+    
+        if self.model_type == 'ddpm':
+            print(f"Using DDPM sampler with {self.sampler_type} sampler, {self.num_inference_steps} inference steps, and {self.eta} eta")
+            self.sampler = DDPMSampler(self.config, sampler_type=self.sampler_type, num_inference_steps=self.num_inference_steps, eta=self.eta)
+        elif self.model_type == 'gan':
+            print(f"Using GAN sampler")
+            self.sampler = GANSampler(self.config)
+        elif self.model_type == 'vae':
+            print(f"Using VAE sampler")
+            self.sampler = VAESampler(self.config)
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+
         
         # Initialize metric calculators
         self.fid_calculator = FIDCalculator()
@@ -302,41 +321,6 @@ class Evaluator(Sampler):
         self.lpips_calculator = LPIPSCalculator()
         self.psnr_calculator = PSNRCalculator()
     
-    def create_dataloader(self, split='test'):
-        """
-        Create dataloader for evaluation.
-        
-        Args:
-            split: Dataset split ('train' or 'test')
-            
-        Returns:
-            DataLoader
-        """
-        transform = transforms.Compose([
-            transforms.Resize(self.config['image_size']),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])
-        ])
-        
-        dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=(split == 'train'),
-            download=True,
-            transform=transform
-        )
-        
-        # Create dataloader using utility function
-        from diffusion.utils import create_dataloader
-        
-        dataloader = create_dataloader(
-            dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=False,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        return dataloader
     
     def evaluate_metrics(self, real_images, fake_images, save_results=True):
         """
@@ -431,11 +415,17 @@ class Evaluator(Sampler):
         
         # Load real images
         print("Loading real images...")
-        dataloader = self.create_dataloader('test')
+        if self.model_type == 'ddpm' or self.model_type == 'gan':
+            _, dataloader = create_dataloader(self.config, device=self.fid_calculator.device, normalize=True, dataset='mnist')
+        elif self.model_type == 'vae':
+            _, dataloader = create_dataloader(self.config, device=self.fid_calculator.device, normalize=False, dataset='mnist')
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+
         real_images = []
         
         for batch in tqdm(dataloader, desc="Loading real images"):
-            images = batch[0].to(self.device)
+            images = batch[0].to(self.fid_calculator.device)
             real_images.append(images)
             if len(real_images) * self.config['batch_size'] >= num_samples:
                 break
@@ -444,12 +434,17 @@ class Evaluator(Sampler):
         
         # Generate fake images
         print("Generating fake images...")
-        fake_images = self.generate_samples(
-            num_samples=num_samples,
-            sampler_type=sampler_type,
-            num_inference_steps=num_inference_steps,
-            eta=eta
-        )
+        if self.model_type == 'ddpm':
+            fake_images = self.sampler.generate_samples(
+                num_samples=num_samples,
+                sampler_type=self.sampler.sampler_type,
+                num_inference_steps=self.sampler.num_inference_steps,
+                eta=self.sampler.eta
+            )
+        else:
+            fake_images = self.sampler.generate_samples(
+                num_samples=num_samples
+            )
         
         # Evaluate metrics
         results = self.evaluate_metrics(real_images, fake_images, save_results)
@@ -462,13 +457,14 @@ def main():
     Main evaluation function.
     """
     parser = argparse.ArgumentParser(description='Evaluate trained DDPM')
+    parser.add_argument('--model_type', type=str, required=True, help='Model type')
     parser.add_argument('--checkpoint', type=str, required=True, help='Path to checkpoint')
     parser.add_argument('--config', type=str, help='Path to config file')
     parser.add_argument('--num-samples', type=int, default=1000, help='Number of samples to evaluate')
-    parser.add_argument('--sampler', type=str, default='deterministic', 
-                       choices=['ancestral', 'deterministic', 'ddim'], help='Sampler type')
+    parser.add_argument('--sampler', type=str, default='ancestral', 
+                       choices=['ancestral', 'ddim'], help='Sampler type')
     parser.add_argument('--steps', type=int, default=1000, help='Number of inference steps')
-    parser.add_argument('--eta', type=float, default=0.0, help='Noise level for DDIM')
+    parser.add_argument('--eta', type=float, default=0.1, help='Noise level for DDIM')
     parser.add_argument('--results-dir', type=str, default='evaluation_results', help='Results directory')
     parser.add_argument('--seed', type=int, default=42, help='Random seed')
     
@@ -484,15 +480,13 @@ def main():
     config['results_dir'] = args.results_dir
     config['seed'] = args.seed
     
+    print(config)
     # Create evaluator
-    evaluator = Evaluator(config)
+    evaluator = Evaluator(args.model_type, config, sampler_type=args.sampler, num_inference_steps=args.steps, eta=args.eta)
     
     # Run evaluation
     results = evaluator.evaluate(
         num_samples=args.num_samples,
-        sampler_type=args.sampler,
-        num_inference_steps=args.steps,
-        eta=args.eta,
         save_results=True
     )
 

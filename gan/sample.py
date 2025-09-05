@@ -30,7 +30,7 @@ class GANSampler:
     for exploring the latent space of trained GANs.
     """
     
-    def __init__(self, model_path: str):
+    def __init__(self, config):
         """
         Initialize GAN sampler.
         
@@ -39,13 +39,21 @@ class GANSampler:
             device: Device to use for sampling
         """
         self.device = get_device()
-        self.model_path = model_path
+        self.config = config
         
         # Load model
-        self.model = self._load_model(model_path)
-        self.model.eval()
+        self.model = GAN(
+                latent_dim=self.config['latent_dim'],
+                hidden_dims=self.config['hidden_dims'],
+                in_channels=self.config['in_channels'],
+                image_size=self.config['image_size']
+            )
+
+        checkpoint = torch.load(self.config['checkpoint_path'], map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval().to(self.device)
         
-        print(f"Loaded GAN model from {model_path}")
+        print(f"Loaded GAN model from {self.config['checkpoint_path']}")
         print(f"Generator parameters: {sum(p.numel() for p in self.model.generator.parameters()):,}")
         print(f"Discriminator parameters: {sum(p.numel() for p in self.model.discriminator.parameters()):,}")
         print(f"Latent dimension: {self.model.latent_dim}")
@@ -54,105 +62,8 @@ class GANSampler:
         print(f"Image size: {self.model.image_size}")
         print(f"Using device: {self.device}")
     
-    def _load_model(self, model_path: str) -> GAN:
-        """
-        Load GAN model from checkpoint.
-        
-        Args:
-            model_path: Path to model checkpoint
-            
-        Returns:
-            Loaded GAN model
-        """
-        # Load checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Extract model configuration from checkpoint
-        if 'model_state_dict' in checkpoint:
-            # Load model state dict
-            model_state = checkpoint['model_state_dict']
-            
-            # Extract model configuration from state dict
-            config = self._extract_model_config(model_state)
-            
-            # Create model with extracted configuration
-            model = GAN(
-                latent_dim=config['latent_dim'],
-                hidden_dims=config['hidden_dims'],
-                in_channels=config['in_channels'],
-                image_size=config['image_size']
-            )
-            
-            # Load state dict
-            model.load_state_dict(model_state)
-            
-        else:
-            # Assume it's a direct model save
-            model = checkpoint
-        
-        return model.to(self.device)
     
-    def _extract_model_config(self, model_state: dict) -> dict:
-        """
-        Extract model configuration from state dict.
-        
-        Args:
-            model_state: GAN state dictionary
-            
-        Returns:
-            Configuration dictionary
-        """
-        config = {}
-        
-        # Extract latent dimension
-        for key in model_state.keys():
-            if 'generator.fc.weight' in key:
-                config['latent_dim'] = model_state[key].shape[1]
-                break
-        
-        if 'latent_dim' not in config:
-            raise ValueError("Could not infer latent dimension from checkpoint")
-        
-        # Extract hidden dimensions from generator 
-        # and input channels from discriminator
-        hidden_dims = []
-        for key in sorted(model_state.keys()):
-            if 'generator.generator' in key and '.weight' in key and len(model_state[key].shape) == 4:
-                # Extract layer number and output channels
-                hidden_dims.append(model_state[key].shape[0])
-
-            if 'discriminator.discriminator.0.weight' in key:  # First conv layer
-                config['in_channels'] = model_state[key].shape[1]
-        
-        if not hidden_dims:
-            # Default configuration if we can't extract
-            hidden_dims = [1024, 512, 256, 128]
-            print("Warning: Could not extract hidden dimensions, using default")
-        
-        config['hidden_dims'] = hidden_dims
-        
-        if 'in_channels' not in config:
-            config['in_channels'] = 1  # Default for MNIST
-        
-        # Extract image size
-        for key in model_state.keys():
-            if 'generator.fc.weight' in key:
-                initial_size = int(np.sqrt(model_state[key].shape[0] / (config['hidden_dims'][0])))
-                config['image_size'] = initial_size * (2 ** len(config['hidden_dims']))
-                break
-        
-        if 'image_size' not in config:
-            config['image_size'] = 32
-        
-        print(f"Extracted model configuration:")
-        print(f"  Latent dimension: {config['latent_dim']}")
-        print(f"  Hidden dimensions: {config['hidden_dims']}")
-        print(f"  Input channels: {config['in_channels']}")
-        print(f"  Image size: {config['image_size']}")
-        
-        return config
-    
-    def sample_random(self, num_samples: int = 16) -> torch.Tensor:
+    def generate_samples(self, num_samples: int = 16) -> torch.Tensor:
         """
         Sample random images from the GAN.
         
@@ -420,7 +331,7 @@ def main():
     parser = argparse.ArgumentParser(description="Sample from trained VAE")
     
     # Model parameters
-    parser.add_argument('--model_path', type=str, required=True, help='Path to trained VAE model')
+    parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--output_dir', type=str, default='vae_samples', help='Output directory')
     
     # Sampling parameters
@@ -446,11 +357,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Create sampler
-    sampler = GANSampler(args.model_path)
+    sampler = GANSampler(args.config)
     
     # Generate random samples
     print("Generating random samples...")
-    random_samples = sampler.sample_random(args.num_samples)
+    random_samples = sampler.generate_samples(args.num_samples)
     sampler.save_samples(random_samples, os.path.join(args.output_dir, "random_samples.png"))
     
     # Generate latent grid

@@ -76,76 +76,6 @@ class AncestralSampler:
         return sample
 
 
-class DeterministicSampler:
-    """
-    Deterministic sampling for DDPM (DDIM-like).
-    Implements deterministic sampling by setting eta=0.
-    Fastest sampler, but lower quality.
-    """
-    
-    def __init__(self, scheduler, num_inference_steps: int = 1000):
-        """
-        Initialize the deterministic sampler.
-        
-        Args:
-            scheduler: DDPM scheduler
-            num_inference_steps: Number of inference steps
-            eta: Controls the amount of noise (0 = deterministic, 1 = stochastic)
-        """
-        self.scheduler = scheduler
-        self.num_inference_steps = num_inference_steps
-        self.scheduler.set_timesteps(num_inference_steps)
-        self.device = self.scheduler.device
-    
-    def step(self, model_output: torch.FloatTensor, timestep: int, 
-             sample: torch.FloatTensor) -> torch.FloatTensor:
-        """
-        Perform a single deterministic sampling step.
-        
-        Args:
-            model_output: Predicted noise from the model
-            timestep: Current timestep
-            sample: Current noisy sample
-            
-        Returns:
-            Denoised sample
-        """
-        return self.scheduler.step(model_output, timestep, sample, eta=0.0)
-    
-    def __call__(self, model, shape: Tuple[int, ...], 
-                 progress_bar: bool = True) -> torch.FloatTensor:
-        """
-        Generate samples using deterministic sampling.
-        
-        Args:
-            model: DDPM model
-            shape: Shape of samples to generate (batch_size, channels, height, width)
-            device: Device to generate samples on
-            progress_bar: Whether to show progress bar
-            
-        Returns:
-            Generated samples
-        """
-        # Start from pure noise
-        sample = torch.randn(shape, device=self.device)
-        
-        # Reverse diffusion process
-        timesteps = self.scheduler.timesteps
-        
-        if progress_bar:
-            timesteps = tqdm.tqdm(timesteps, desc="Deterministic Sampling")
-        
-        for timestep in timesteps:
-            # Predict noise
-            with torch.no_grad():
-                model_output = model(sample, timestep)
-            
-            # Denoise step
-            sample = self.step(model_output, timestep, sample)
-        
-        return sample
-
-
 class DDIMSampler:
     """
     DDIM Sampler for fast deterministic sampling.
@@ -247,7 +177,7 @@ def create_sampler(sampler_type: str, scheduler, **kwargs):
     Factory function to create samplers.
     
     Args:
-        sampler_type: Type of sampler ("ancestral", "deterministic", "ddim")
+        sampler_type: Type of sampler ("ancestral", "ddim")
         scheduler: DDPM scheduler
         **kwargs: Additional arguments for the sampler
         
@@ -256,8 +186,6 @@ def create_sampler(sampler_type: str, scheduler, **kwargs):
     """
     if sampler_type == "ancestral":
         return AncestralSampler(scheduler, **kwargs)
-    elif sampler_type == "deterministic":
-        return DeterministicSampler(scheduler, **kwargs)
     elif sampler_type == "ddim":
         return DDIMSampler(scheduler, **kwargs)
     else:
@@ -280,11 +208,6 @@ if __name__ == "__main__":
     ancestral_sampler = AncestralSampler(scheduler, num_inference_steps=10)
     samples = ancestral_sampler(model, (2, 1, 28, 28), progress_bar=False)
     print(f"Ancestral samples shape: {samples.shape}")
-    
-    # Test deterministic sampler
-    det_sampler = DeterministicSampler(scheduler, num_inference_steps=10)
-    samples = det_sampler(model, (2, 1, 28, 28), progress_bar=False)
-    print(f"Deterministic samples shape: {samples.shape}")
     
     # Test DDIM sampler
     ddim_sampler = DDIMSampler(scheduler, num_inference_steps=10)

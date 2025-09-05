@@ -6,6 +6,10 @@ import os
 from typing import Dict, Any, Optional
 import copy
 import matplotlib.pyplot as plt
+from torch.utils.data import DataLoader
+from torchvision import datasets, transforms
+import importlib
+import torchvision.utils as vutils
 
 class EMA:
     """
@@ -112,70 +116,85 @@ def count_parameters(model: nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
-def save_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, 
-                   scheduler: Any, epoch: int, loss: float, 
-                   ema: Optional[EMA] = None, 
-                   filepath: str = "checkpoint.pth"):
+def save_checkpoint(trainer, is_best=False, normal_save=False):
     """
     Save model checkpoint.
     
     Args:
-        model: Model to save
-        optimizer: Optimizer state
-        scheduler: Learning rate scheduler
-        epoch: Current epoch
-        loss: Current loss
-        ema: EMA object (optional)
-        filepath: Path to save checkpoint
+        trainer: Trainer to save checkpoint for
+        is_best: Whether this is the best model so far
+        normal_save: Whether this is a normal save
     """
-    checkpoint = {
-        'epoch': epoch,
-        'model_state_dict': model.state_dict(),
-        'optimizer_state_dict': optimizer.state_dict(),
-        'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-        'loss': loss,
-        'ema_shadow': ema.shadow if ema else None
-    }
+    if hasattr(trainer, 'g_optimizer'):
+        checkpoint = {
+            'epoch': trainer.current_epoch,
+            'model_state_dict': trainer.model.state_dict(),
+            'g_optimizer_state_dict': trainer.g_optimizer.state_dict(),
+            'd_optimizer_state_dict': trainer.d_optimizer.state_dict(),
+            'g_scheduler_state_dict': trainer.g_scheduler.state_dict(),
+            'd_scheduler_state_dict': trainer.d_scheduler.state_dict(),
+            'g_loss': trainer.best_g_loss,
+            'd_loss': trainer.best_d_loss,
+            'g_ema_shadow': trainer.g_ema.shadow,
+            'd_ema_shadow': trainer.d_ema.shadow
+        }
+    else:
+        checkpoint = {
+            'epoch': trainer.current_epoch,
+            'model_state_dict': trainer.model.state_dict(),
+            'optimizer_state_dict': trainer.optimizer.state_dict(),
+            'scheduler_state_dict': trainer.scheduler.state_dict() if trainer.scheduler else None,
+            'loss': trainer.best_loss,
+            'ema_shadow': trainer.ema.shadow if trainer.ema else None
+        }
     
+    if normal_save:
+        filepath = os.path.join(trainer.config['checkpoint_dir'], f"checkpoint_epoch_{trainer.current_epoch}.pth")
+    elif is_best:
+        filepath = os.path.join(trainer.config['checkpoint_dir'], "best_model.pth")
+
     torch.save(checkpoint, filepath)
-    print(f"Checkpoint saved to {filepath}")
+    if normal_save:
+        print(f"Checkpoint saved to {filepath}")
+    elif is_best:
+        print(f"Best model saved to {filepath}")
 
 
-def load_checkpoint(model: nn.Module, optimizer: torch.optim.Optimizer, 
-                   scheduler: Any, ema: Optional[EMA] = None,
-                   filepath: str = "checkpoint.pth") -> Dict[str, Any]:
+def load_checkpoint(trainer, checkpoint_path):
     """
     Load model checkpoint.
     
     Args:
-        model: Model to load checkpoint into
-        optimizer: Optimizer to load state into
-        scheduler: Learning rate scheduler to load state into
-        ema: EMA object to load state into (optional)
-        filepath: Path to checkpoint file
+        trainer: Trainer to load checkpoint into
+        checkpoint_path: Path to checkpoint file
         
     Returns:
         Dictionary containing checkpoint information
     """
-    checkpoint = torch.load(filepath, map_location=get_device())
+    checkpoint = torch.load(checkpoint_path, map_location=get_device())
     
-    model.load_state_dict(checkpoint['model_state_dict'])
+    trainer.model.load_state_dict(checkpoint['model_state_dict'])
 
-    if optimizer and 'optimizer_state_dict' in checkpoint:
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
+    if hasattr(trainer, 'g_optimizer'):
+        trainer.g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
+        trainer.d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
+        trainer.g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
+        trainer.d_scheduler.load_state_dict(checkpoint['d_scheduler_state_dict'])
+        trainer.g_ema.shadow = checkpoint['g_ema_shadow']
+        trainer.d_ema.shadow = checkpoint['d_ema_shadow']
+        trainer.best_g_loss = checkpoint['g_loss']
+        trainer.best_d_loss = checkpoint['d_loss']
+    else:
+        trainer.optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        trainer.scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
+        trainer.ema.shadow = checkpoint['ema_shadow']
+        trainer.best_loss = checkpoint['loss']
+  
+    trainer.current_epoch = checkpoint['epoch'] + 1
     
-    if scheduler and 'scheduler_state_dict' in checkpoint:
-        scheduler.load_state_dict(checkpoint['scheduler_state_dict'])
-
-    
-    if ema and checkpoint['ema_shadow']:
-        ema.shadow = checkpoint['ema_shadow']
-    
-    print(f"Checkpoint loaded from {filepath}")
+    print(f"Resumed from epoch {trainer.current_epoch}")
+    print(f"Checkpoint loaded from {checkpoint_path}")
     print(f"Epoch: {checkpoint['epoch']}, Loss: {checkpoint['loss']:.4f}")
-    
-    return checkpoint
 
 
 def create_lr_scheduler(optimizer: torch.optim.Optimizer, 
@@ -266,6 +285,7 @@ def log_hyperparameters(config: Dict[str, Any], log_dir: str = "logs"):
         for key, value in config.items():
             f.write(f"{key}: {value}\n")
 
+
 def log_metrics(log_dir: str, train_loss, val_loss, epoch):
         """
         Log training metrics.
@@ -286,6 +306,7 @@ def log_metrics(log_dir: str, train_loss, val_loss, epoch):
         
         # Print to console
         print(f"Epoch {epoch}: Train Loss: {train_loss:.6f}, Val Loss: {val_loss:.6f}")
+
 
 def compute_model_size_mb(model: nn.Module) -> float:
     """
@@ -327,36 +348,76 @@ def print_model_summary(model: nn.Module):
     print(model)
 
 
-def create_dataloader(dataset, batch_size: int = 32, shuffle: bool = True,
-                     num_workers: int = 4, pin_memory: bool = True, device=None):
+def create_dataloader(config, device = None, normalize = True, dataset = 'mnist'):
     """
     Create a DataLoader with common settings.
     
     Args:
-        dataset: Dataset to load
-        batch_size: Batch size
-        shuffle: Whether to shuffle data
-        num_workers: Number of worker processes
-        pin_memory: Whether to pin memory
-        device: Device to use (for MPS compatibility)
-        
+        trainer: Trainer to create dataloader for
+        dataset: Dataset to load    
     Returns:
         DataLoader
     """
-    from torch.utils.data import DataLoader
     
     # Disable pin_memory on MPS (Apple Silicon) as it's not supported
     if device is not None and device.type == 'mps':
         pin_memory = False
     
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
+    if dataset == 'mnist':
+        # Data transformations
+        if not normalize:
+            transform = transforms.Compose([
+                transforms.Resize(config['image_size']),
+                transforms.ToTensor(),
+                # Normalize to [0, 1] for VAE (since we use sigmoid in decoder)
+            ])
+        else:
+            transform = transforms.Compose([
+                transforms.Resize(config['image_size']),
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5])  # Normalize to [-1, 1] for Tanh output
+            ])
+        
+        # Load MNIST dataset
+        train_dataset = datasets.MNIST(root=config['data_dir'], train=True, download=True, transform=transform)
+        val_dataset = datasets.MNIST(root=config['data_dir'], train=False, download=True, transform=transform)
+
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config['batch_size'],
+        shuffle=True,
+        num_workers=config['num_workers'],
         pin_memory=pin_memory,
         drop_last=True
     )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=config['batch_size'],
+        shuffle=False,
+        num_workers=config['num_workers'],
+        pin_memory=pin_memory,
+        drop_last=True
+    )
+    return train_loader, val_loader
+
+
+def save_image_grid(images, filepath, nrow=4):
+        """
+        Save a grid of images.
+        
+        Args:
+            images: Tensor of images
+            filepath: Path to save the grid
+            nrow: Number of images per row
+        """
+        # Create grid
+        grid = vutils.make_grid(images, nrow=nrow, normalize=False, padding=2)
+        
+        # Save grid
+        vutils.save_image(grid, filepath)
+
 
 def load_config(config_path: str, default_config: dict) -> dict:
     """
@@ -371,8 +432,6 @@ def load_config(config_path: str, default_config: dict) -> dict:
     # Get default config first
     config = default_config
     
-    # Load the config module
-    import importlib
     spec = importlib.util.spec_from_file_location("config", config_path)
     config_module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(config_module)
@@ -382,6 +441,7 @@ def load_config(config_path: str, default_config: dict) -> dict:
         config.update(config_module.DEFAULT_CONFIG)
     
     return config
+
 
 def plot_losses(log_file: str, save_path: str):
     """

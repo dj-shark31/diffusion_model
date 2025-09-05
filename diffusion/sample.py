@@ -1,9 +1,6 @@
 import torch
-import torch.nn as nn
 import argparse
 import os
-import numpy as np
-import json
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 import torchvision.utils as vutils
@@ -11,24 +8,30 @@ import torchvision.utils as vutils
 # Import our modules
 from diffusion.model import UNetMini
 from diffusion.schedulers import DDPMScheduler
-from diffusion.sampler import AncestralSampler, DeterministicSampler, DDIMSampler, create_sampler
-from diffusion.utils import get_device, set_seed, load_checkpoint
+from diffusion.sampler import create_sampler
+from diffusion.utils import get_device, set_seed
 
 
-class Sampler:
+class DDPMSampler:
     """
     DDPM Sampler for generating images from trained models.
     """
     
-    def __init__(self, config):
+    def __init__(self, config, sampler_type = "ancestral", num_inference_steps = 1000, eta = 0.1):
         """
         Initialize the sampler.
         
         Args:
             config: Configuration dictionary
+            sampler_type: Type of sampler ("ancestral", "ddim")
+            num_inference_steps: Number of inference steps
+            eta: Noise level for DDIM (0 = deterministic, 1 = stochastic)
         """
         self.config = config
         self.device = get_device()
+        self.sampler_type = sampler_type
+        self.num_inference_steps = num_inference_steps
+        self.eta = eta
         
         # Set seed for reproducibility
         set_seed(config['seed'])
@@ -81,36 +84,25 @@ class Sampler:
         self.model.eval()
         print(f"Checkpoint loaded successfully (Epoch: {checkpoint.get('epoch', 'Unknown')})")
     
-    def generate_samples(self, num_samples=4, sampler_type="ancestral", 
-                        num_inference_steps=1000, eta=1.0, progress_bar=True):
+    def generate_samples(self, num_samples=4, progress_bar=True):
         """
         Generate samples using the trained model.
         
         Args:
             num_samples: Number of samples to generate
-            sampler_type: Type of sampler ("ancestral", "deterministic", "ddim")
-            num_inference_steps: Number of inference steps
-            eta: Noise level for DDIM (0 = deterministic, 1 = stochastic)
             progress_bar: Whether to show progress bar
             
         Returns:
             Generated samples
         """
-        print(f"Generating {num_samples} samples using {sampler_type} sampler...")
+        print(f"Generating {num_samples} samples using {self.sampler_type} sampler...")
         
         # Create sampler
-        if sampler_type == "deterministic":
-            sampler = create_sampler(
-                sampler_type=sampler_type,
+        sampler = create_sampler(
+                sampler_type=self.sampler_type,
                 scheduler=self.scheduler,
-                num_inference_steps=num_inference_steps
-            )
-        else:
-            sampler = create_sampler(
-                sampler_type=sampler_type,
-                scheduler=self.scheduler,
-                num_inference_steps=num_inference_steps,
-                eta=eta
+                num_inference_steps=self.num_inference_steps,
+                eta=self.eta
             )
 
         
@@ -157,16 +149,12 @@ class Sampler:
         vutils.save_image(grid, filepath)
         print(f"Samples saved to {filepath}")
     
-    def generate_and_save(self, num_samples=4, sampler_type="ancestral", 
-                         num_inference_steps=1000, eta=1.0, output_dir="samples"):
+    def generate_and_save(self, num_samples=4, output_dir="samples"):
         """
         Generate samples and save them.
         
         Args:
             num_samples: Number of samples to generate
-            sampler_type: Type of sampler
-            num_inference_steps: Number of inference steps
-            eta: Noise level for DDIM
             output_dir: Directory to save samples
         """
         # Create output directory
@@ -175,15 +163,11 @@ class Sampler:
         # Generate samples
         samples = self.generate_samples(
             num_samples=num_samples,
-            sampler_type=sampler_type,
-            num_inference_steps=num_inference_steps,
-            eta=eta
+            progress_bar=False
         )
         
         # Save samples
-        filename = f"samples_{sampler_type}_steps{num_inference_steps}.png"
-        if eta > 0:
-            filename = f"samples_{sampler_type}_steps{num_inference_steps}_eta{eta}.png"
+        filename = f"samples_{self.sampler_type}_steps{self.num_inference_steps}_eta{self.eta}.png"
         
         filepath = os.path.join(output_dir, filename)
         self.save_samples(samples, filepath)
@@ -324,6 +308,8 @@ def load_config(config_path):
             try:
                 if '.' in value:
                     config[key] = float(value)
+                elif '[' and ']' in value:
+                    config[key] = [int(v) for v in value.strip().strip('[').strip(']').split(',')]
                 else:
                     config[key] = int(value)
             except ValueError:
@@ -363,7 +349,7 @@ def main():
     config['seed'] = args.seed
     
     # Create sampler
-    sampler = Sampler(config)
+    sampler = DDPMSampler(config, sampler_type=args.sampler, num_inference_steps=args.steps, eta=args.eta)
     
     # Generate samples based on arguments
     if args.comparison:
@@ -373,9 +359,6 @@ def main():
     else:
         sampler.generate_and_save(
             num_samples=args.num_samples,
-            sampler_type=args.sampler,
-            num_inference_steps=args.steps,
-            eta=args.eta,
             output_dir=args.output_dir
         )
 

@@ -24,9 +24,8 @@ from vae.losses import VAELoss, BetaVAELoss
 from diffusion.utils import (
     EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, 
     get_device, log_hyperparameters, create_lr_scheduler, create_optimizer,
-    create_dataloader, print_model_summary, log_metrics, plot_losses, load_config
+    create_dataloader, print_model_summary, log_metrics, plot_losses, load_config, save_image_grid
 )
-import torchvision.utils as vutils
 
 
 class VAETrainer:
@@ -114,55 +113,8 @@ class VAETrainer:
         
         # Load checkpoint if exists
         if config['resume_from']:
-            self.load_checkpoint(config['resume_from'])
+            load_checkpoint(self, config['resume_from'])
     
-    def create_dataloaders(self):
-        """
-        Create training and validation dataloaders.
-        
-        Returns:
-            Tuple of (train_loader, val_loader)
-        """
-        # Data transformations
-        transform = transforms.Compose([
-            transforms.Resize(self.config['image_size']),
-            transforms.ToTensor(),
-            # Normalize to [0, 1] for VAE (since we use sigmoid in decoder)
-        ])
-        
-        # Load MNIST dataset
-        train_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=True,
-            download=True,
-            transform=transform
-        )
-        
-        val_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=False,
-            download=True,
-            transform=transform
-        )
-        
-        # Create dataloaders
-        train_loader = create_dataloader(
-            train_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=True,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        val_loader = create_dataloader(
-            val_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=False,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        return train_loader, val_loader
     
     def train_step(self, batch):
         """
@@ -248,59 +200,6 @@ class VAETrainer:
             'val_kl_loss': total_kl_loss / num_batches
         }
     
-    def save_checkpoint(self, is_best=False, normal_save=False):
-        """
-        Save model checkpoint.
-        
-        Args:
-            is_best: Whether this is the best model so far
-        """
-        if normal_save:
-            checkpoint_path = os.path.join(
-                self.config['checkpoint_dir'], 
-                f"checkpoint_epoch_{self.current_epoch}.pth"
-            )
-        
-            save_checkpoint(
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.lr_scheduler,
-                epoch=self.current_epoch,
-                loss=self.best_loss,
-                ema=self.ema,
-                filepath=checkpoint_path
-            )
-        
-        if is_best:
-            best_path = os.path.join(self.config['checkpoint_dir'], "best_model.pth")
-            save_checkpoint(
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.lr_scheduler,
-                epoch=self.current_epoch,
-                loss=self.best_loss,
-                ema=self.ema,
-                filepath=best_path
-            )
-    
-    def load_checkpoint(self, checkpoint_path):
-        """
-        Load model checkpoint.
-        
-        Args:
-            checkpoint_path: Path to checkpoint file
-        """
-        checkpoint = load_checkpoint(
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.lr_scheduler,
-            ema=self.ema,
-            filepath=checkpoint_path
-        )
-        
-        self.current_epoch = checkpoint['epoch'] + 1
-        self.best_loss = checkpoint['loss']
-        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     
     def generate_samples(self, num_samples=16, nrow=4):
         """
@@ -322,24 +221,9 @@ class VAETrainer:
             )
             
             # Convert to grid and save
-            self._save_image_grid(samples, samples_path, nrow=nrow)
+            save_image_grid(samples, samples_path, nrow=nrow)
         
         self.model.train()
-    
-    def _save_image_grid(self, images, filepath, nrow=4):
-        """
-        Save images as a grid.
-        
-        Args:
-            images: Tensor of images
-            filepath: Path to save the grid
-            nrow: Number of samples per row
-        """
-        # Create grid
-        grid = vutils.make_grid(images, nrow=nrow, normalize=False, padding=2)
-        
-        # Save grid
-        vutils.save_image(grid, filepath)
     
 
     def train(self):
@@ -350,7 +234,7 @@ class VAETrainer:
         print(f"Experiment: {self.experiment_name}")
         
         # Create dataloaders
-        train_loader, val_loader = self.create_dataloaders()
+        train_loader, val_loader = create_dataloader(self.config, device=self.device, normalize=False, dataset='mnist')
         
         # Training loop
         for epoch in range(self.current_epoch, self.config['num_epochs']):
@@ -393,11 +277,11 @@ class VAETrainer:
             # Save checkpoint if new best loss
             if val_metrics['val_total_loss'] < self.best_loss:
                 self.best_loss = val_metrics['val_total_loss']
-                self.save_checkpoint(is_best=True)
+                save_checkpoint(self, is_best=True)
             
             # Save checkpoint every N epochs
             if (epoch + 1) % self.config['save_every'] == 0:
-                self.save_checkpoint(normal_save=True)
+                save_checkpoint(self, normal_save=True)
             
             # Generate samples at end of epoch
             if (epoch + 1) % self.config['sample_every'] == 0:

@@ -26,7 +26,7 @@ from gan.losses import GANLoss, WassersteinLoss, HingeLoss, FeatureMatchingLoss
 from diffusion.utils import (
     EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, 
     get_device, log_hyperparameters, create_lr_scheduler, create_optimizer,
-    create_dataloader, log_metrics, plot_losses, load_config, print_model_summary
+    create_dataloader, log_metrics, plot_losses, load_config, print_model_summary, save_image_grid
 )
 
 
@@ -131,55 +131,8 @@ class GANTrainer:
 
         # Load checkpoint if exists
         if config['resume_from']:
-            self.load_checkpoint(config['resume_from'])
+            load_checkpoint(self, config['resume_from'])
     
-    def create_dataloaders(self):
-        """
-        Create training and validation dataloaders.
-        
-        Returns:
-            Tuple of (train_loader, val_loader)
-        """
-        # Data transformations
-        transform = transforms.Compose([
-            transforms.Resize(self.config['image_size']),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])  # Normalize to [-1, 1] for Tanh output
-        ])
-        
-        # Load MNIST dataset
-        train_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=True,
-            download=True,
-            transform=transform
-        )
-        
-        val_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=False,
-            download=True,
-            transform=transform
-        )
-        
-        # Create dataloaders
-        train_loader = create_dataloader(
-            train_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=True,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        val_loader = create_dataloader(
-            val_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=False,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        return train_loader, val_loader
     
     def train_step(self, batch):
         """
@@ -325,60 +278,6 @@ class GANTrainer:
             'val_g_loss': total_g_loss / num_batches
         }
     
-    def save_checkpoint(self, is_best=False, normal_save=False):
-        """
-        Save model checkpoint.
-        
-        Args:
-            is_best: Whether this is the best model so far
-        """
-        checkpoint = {
-            'epoch': self.current_epoch,
-            'model_state_dict': self.model.state_dict(),
-            'g_optimizer_state_dict': self.g_optimizer.state_dict(),
-            'd_optimizer_state_dict': self.d_optimizer.state_dict(),
-            'g_scheduler_state_dict': self.g_scheduler.state_dict(),
-            'd_scheduler_state_dict': self.d_scheduler.state_dict(),
-            'g_loss': self.best_g_loss,
-            'd_loss': self.best_d_loss,
-            'g_ema_shadow': self.g_ema.shadow,
-            'd_ema_shadow': self.d_ema.shadow
-        }
-        
-        if normal_save:
-            checkpoint_path = os.path.join(self.config['checkpoint_dir'], f"checkpoint_epoch_{self.current_epoch}.pth")
-            torch.save(checkpoint, checkpoint_path)
-            print(f"Checkpoint saved to {checkpoint_path}")
-        
-        if is_best:
-            best_path = os.path.join(self.config['checkpoint_dir'], "best_model.pth")
-            torch.save(checkpoint, best_path)
-            print(f"Best model saved to {best_path}")
-    
-    def load_checkpoint(self, checkpoint_path):
-        """
-        Load model checkpoint.
-        
-        Args:
-            checkpoint_path: Path to checkpoint file
-        """
-        checkpoint = torch.load(checkpoint_path, map_location=self.device)
-        
-        self.model.load_state_dict(checkpoint['model_state_dict'])
-        self.g_optimizer.load_state_dict(checkpoint['g_optimizer_state_dict'])
-        self.d_optimizer.load_state_dict(checkpoint['d_optimizer_state_dict'])
-        self.g_scheduler.load_state_dict(checkpoint['g_scheduler_state_dict'])
-        self.d_scheduler.load_state_dict(checkpoint['d_scheduler_state_dict'])
-        
-        if 'g_ema_shadow' in checkpoint:
-            self.g_ema.shadow = checkpoint['g_ema_shadow']
-        if 'd_ema_shadow' in checkpoint:
-            self.d_ema.shadow = checkpoint['d_ema_shadow']
-        
-        self.current_epoch = checkpoint['epoch'] + 1
-        self.best_g_loss = checkpoint['g_loss']
-        self.best_d_loss = checkpoint['d_loss']
-        print(f"Loaded checkpoint from epoch {checkpoint['epoch']}")
     
     def generate_samples(self, num_samples=16):
         """
@@ -397,37 +296,10 @@ class GANTrainer:
             samples_path = os.path.join(self.config['sample_dir'], f"samples_epoch_{self.current_epoch}.png")
             
             # Convert to grid and save
-            self._save_image_grid(samples, samples_path, num_samples)
+            save_image_grid(samples, samples_path, nrow=4)
         
         self.model.train()
     
-    def _save_image_grid(self, images, filepath, num_samples):
-        """
-        Save images as a grid.
-        
-        Args:
-            images: Tensor of images
-            filepath: Path to save the grid
-            num_samples: Number of samples
-        """
-        # Convert to numpy and denormalize from [-1, 1] to [0, 1]
-        images = (images.cpu().numpy() + 1) / 2
-        images = np.clip(images, 0, 1)
-        
-        # Create grid
-        grid_size = int(np.ceil(np.sqrt(num_samples)))
-        fig, axes = plt.subplots(grid_size, grid_size, figsize=(10, 10))
-        
-        for i in range(grid_size):
-            for j in range(grid_size):
-                idx = i * grid_size + j
-                if idx < num_samples:
-                    axes[i, j].imshow(images[idx, 0], cmap='gray')
-                axes[i, j].axis('off')
-        
-        plt.tight_layout()
-        plt.savefig(filepath, dpi=150, bbox_inches='tight')
-        plt.close()
     
     def train(self):
         """
@@ -437,7 +309,7 @@ class GANTrainer:
         print(f"Experiment: {self.experiment_name}")
         
         # Create dataloaders
-        train_loader, val_loader = self.create_dataloaders()
+        train_loader, val_loader = create_dataloader(self.config, device=self.device, normalize=True, dataset='mnist')
         
         # Training loop
         for epoch in range(self.current_epoch, self.config['num_epochs']):
@@ -483,10 +355,10 @@ class GANTrainer:
             if val_metrics['val_g_loss'] < self.best_g_loss:
                 self.best_g_loss = val_metrics['val_g_loss']
                 self.best_d_loss = val_metrics['val_d_loss']
-                self.save_checkpoint(is_best=True)
+                save_checkpoint(self, is_best=True)
             
             if (epoch + 1) % self.config['save_every'] == 0:
-                self.save_checkpoint(normal_save=True)
+                save_checkpoint(self, normal_save=True)
             
             # Generate samples at end of epoch
             if (epoch + 1) % self.config['sample_every'] == 0:

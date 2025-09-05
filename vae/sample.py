@@ -28,7 +28,7 @@ class VAESampler:
     for exploring the latent space of trained VAEs.
     """
     
-    def __init__(self, model_path: str):
+    def __init__(self, config):
         """
         Initialize VAE sampler.
         
@@ -36,11 +36,18 @@ class VAESampler:
             model_path: Path to trained VAE model checkpoint
         """
         self.device = get_device()
-        self.model_path = model_path
+        self.config = config
         
         # Load model
-        self.model = self._load_model(model_path)   
-        self.model.eval()
+        self.model = VAE(
+                in_channels=self.config['in_channels'],
+                hidden_dims=self.config['hidden_dims'],
+                latent_dim=self.config['latent_dim'],
+                image_size=self.config['image_size'],
+            )
+        checkpoint = torch.load(self.config['checkpoint_path'], map_location=self.device)
+        self.model.load_state_dict(checkpoint['model_state_dict'])
+        self.model.eval().to(self.device)
         
         print(f"Loaded VAE model from {model_path}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
@@ -50,100 +57,8 @@ class VAESampler:
         print(f"Image size: {self.model.image_size}")
         print(f"Using device: {self.device}")
     
-    def _load_model(self, model_path: str) -> VAE:
-        """
-        Load VAE model from checkpoint.
-        
-        Args:
-            model_path: Path to model checkpoint
-            
-        Returns:
-            Loaded VAE model
-        """
-        # Load checkpoint
-        checkpoint = torch.load(model_path, map_location=self.device)
-        
-        # Extract model configuration from checkpoint
-        if 'model_state_dict' in checkpoint:
-            # Load model state dict
-            model_state = checkpoint['model_state_dict']
-            
-            # Extract model configuration from state dict
-            config = self._extract_model_config(model_state)
-            
-            # Create model with extracted configuration
-            model = VAE(
-                in_channels=config['in_channels'],
-                hidden_dims=config['hidden_dims'],
-                latent_dim=config['latent_dim'],
-                image_size=config['image_size'],
-            )
-            
-            # Load state dict
-            model.load_state_dict(model_state)
-            
-        else:
-            # Assume it's a direct model save
-            model = checkpoint
-        
-        return model.to(self.device)
-    
-    def _extract_model_config(self, model_state: dict) -> dict:
-        """
-        Extract model configuration from state dict.
-        
-        Args:
-            model_state: Model state dictionary
-            
-        Returns:
-            Configuration dictionary
-        """
-        for key in sorted(model_state.keys()):
-            print(key, model_state[key].shape)
-        config = {}
-        # Extract latent dimension
-        for key in model_state.keys():
-            if 'encoder.fc_mu.weight' in key:
-                config['latent_dim'] = model_state[key].shape[0]
-                break
-        
-        if 'latent_dim' not in config:
-            raise ValueError("Could not infer latent dimension from checkpoint")
-        
-        # Extract hidden dimensions from generator 
-        # and input channels from discriminator
-        hidden_dims = []
-        for key in sorted(model_state.keys()):
-            if 'encoder.encoder' in key and '.weight' in key and len(model_state[key].shape) == 4:
-                # Extract layer number and output channels
-                hidden_dims.append(model_state[key].shape[0])
 
-            if 'encoder.encoder.0.weight' in key:  # First conv layer
-                config['in_channels'] = model_state[key].shape[1]
-
-        if not hidden_dims:
-            # Default configuration if we can't extract
-            hidden_dims = [32, 64, 128]
-            print("Warning: Could not extract hidden dimensions, using default")
-        
-        config['hidden_dims'] = hidden_dims
-        
-        # Extract image size
-        for key in model_state.keys():
-            if 'encoder.fc_mu.weight' in key:
-                conv_output_size = int(np.sqrt(model_state[key].shape[1] / (config['hidden_dims'][-1])))
-                config['image_size'] = conv_output_size * (2 ** len(config['hidden_dims']))
-                break
-        
-        print(f"Extracted model configuration:")
-        print(f"  Latent dimension: {config['latent_dim']}")
-        print(f"  Hidden dimensions: {config['hidden_dims']}")
-        print(f"  Input channels: {config['in_channels']}")
-        print(f"  Image size: {config['image_size']}")
-        
-        return config
-    
-    def sample_random(self, num_samples: int = 16) -> torch.Tensor:
+    def generate_samples(self, num_samples: int = 16) -> torch.Tensor:
         """
         Sample random images from the VAE.
         
@@ -437,7 +352,7 @@ def main():
     parser = argparse.ArgumentParser(description="Sample from trained VAE")
     
     # Model parameters
-    parser.add_argument('--model_path', type=str, required=True, help='Path to trained VAE model')
+    parser.add_argument('--config', type=str, required=True, help='Path to config file')
     parser.add_argument('--output_dir', type=str, default='vae_samples', help='Output directory')
     
     # Sampling parameters
@@ -463,11 +378,11 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     # Create sampler
-    sampler = VAESampler(args.model_path)
+    sampler = VAESampler(args.config)
     
     # Generate random samples
     print("Generating random samples...")
-    random_samples = sampler.sample_random(args.num_samples)
+    random_samples = sampler.generate_samples(args.num_samples)
     sampler.save_samples(random_samples, os.path.join(args.output_dir, "random_samples.png"))
     
     # Generate latent grid

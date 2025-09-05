@@ -14,7 +14,10 @@ import numpy as np
 from diffusion.model import UNetMini
 from diffusion.schedulers import DDPMScheduler
 from diffusion.losses import DDPMLoss
-from diffusion.utils import EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, get_device, log_hyperparameters, create_lr_scheduler, log_metrics, plot_losses, load_config
+from diffusion.utils import (
+    EMA, set_seed, gradient_clip, save_checkpoint, load_checkpoint, get_device, log_hyperparameters, 
+    create_lr_scheduler, log_metrics, plot_losses, load_config, create_dataloader, save_image_grid
+)
 
 
 class Trainer:
@@ -93,57 +96,8 @@ class Trainer:
         
         # Load checkpoint if exists
         if config['resume_from']:
-            self.load_checkpoint(config['resume_from'])
+            load_checkpoint(self, config['resume_from'])
     
-    def create_dataloaders(self):
-        """
-        Create training and validation dataloaders.
-        
-        Returns:
-            Tuple of (train_loader, val_loader)
-        """
-        # Data transformations
-        transform = transforms.Compose([
-            transforms.Resize(self.config['image_size']),
-            transforms.ToTensor(),
-            transforms.Normalize([0.5], [0.5])  # Normalize to [-1, 1]
-        ])
-        
-        # Load MNIST dataset
-        train_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=True,
-            download=True,
-            transform=transform
-        )
-        
-        val_dataset = datasets.MNIST(
-            root=self.config['data_dir'],
-            train=False,
-            download=True,
-            transform=transform
-        )
-        
-        # Create dataloaders using utility function
-        from diffusion.utils import create_dataloader
-        
-        train_loader = create_dataloader(
-            train_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=True,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        val_loader = create_dataloader(
-            val_dataset,
-            batch_size=self.config['batch_size'],
-            shuffle=False,
-            num_workers=self.config['num_workers'],
-            device=self.device
-        )
-        
-        return train_loader, val_loader
     
     def train_step(self, batch):
         """
@@ -228,60 +182,6 @@ class Trainer:
         
         self.model.train()
         return total_loss / num_batches
-    
-    def save_checkpoint(self, is_best=False, normal_save=False):
-        """
-        Save model checkpoint.
-        
-        Args:
-            is_best: Whether this is the best model so far
-        """
-        
-        if normal_save:
-            checkpoint_path = os.path.join(
-                self.config['checkpoint_dir'], 
-                f"checkpoint_epoch_{self.current_epoch}.pth"
-            )
-            save_checkpoint(
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.lr_scheduler,
-                epoch=self.current_epoch,
-                loss=self.best_loss,
-                ema=self.ema,
-                filepath=checkpoint_path
-            )
-        
-        if is_best:
-            best_path = os.path.join(self.config['checkpoint_dir'], "best_model.pth")
-            save_checkpoint(
-                model=self.model,
-                optimizer=self.optimizer,
-                scheduler=self.lr_scheduler,
-                epoch=self.current_epoch,
-                loss=self.best_loss,
-                ema=self.ema,
-                filepath=best_path
-            )
-    
-    def load_checkpoint(self, checkpoint_path):
-        """
-        Load model checkpoint.
-        
-        Args:
-            checkpoint_path: Path to checkpoint file
-        """
-        checkpoint = load_checkpoint(
-            model=self.model,
-            optimizer=self.optimizer,
-            scheduler=self.lr_scheduler,
-            ema=self.ema,
-            filepath=checkpoint_path
-        )
-        
-        self.current_epoch = checkpoint['epoch'] + 1
-        self.best_loss = checkpoint['loss']
-        print(f"Resumed from epoch {self.current_epoch}")
 
     def train(self):
         """
@@ -292,7 +192,7 @@ class Trainer:
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         
         # Create dataloaders
-        train_loader, val_loader = self.create_dataloaders()
+        train_loader, val_loader = create_dataloader(self.config, device=self.device, normalize=True, dataset='mnist')
         
         # Training loop
         for epoch in range(self.current_epoch, self.config['num_epochs']):
@@ -325,10 +225,10 @@ class Trainer:
             # Save checkpoint
             if val_loss < self.best_loss:
                 self.best_loss = val_loss
-                self.save_checkpoint(is_best=True)
+                save_checkpoint(self, is_best=True)
             
             if (epoch + 1) % self.config['save_every'] == 0:
-                self.save_checkpoint(normal_save=True)
+                save_checkpoint(self, normal_save=True)
             
             # Generate samples periodically
             if (epoch + 1) % self.config['sample_every'] == 0:
@@ -367,7 +267,7 @@ class Trainer:
         
         # Save samples
         sample_path = os.path.join(self.config['sample_dir'], f"samples_epoch_{epoch}.png")
-        self.save_image_grid(samples, sample_path, nrow=4)
+        save_image_grid(samples, sample_path, nrow=4)
         
         # Restore original model
         self.ema.restore(self.model)
@@ -375,23 +275,6 @@ class Trainer:
         
         print(f"Samples saved to {sample_path}")
     
-    def save_image_grid(self, images, filepath, nrow=4):
-        """
-        Save a grid of images.
-        
-        Args:
-            images: Tensor of images
-            filepath: Path to save the grid
-            nrow: Number of images per row
-        """
-        import torchvision.utils as vutils
-        
-        # Create grid
-        grid = vutils.make_grid(images, nrow=nrow, normalize=False, padding=2)
-        
-        # Save grid
-        vutils.save_image(grid, filepath)
-
 
 def get_default_config():
     """
